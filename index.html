@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Receipt Note Printer</title>
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#2b2f36">
+<link rel="apple-touch-icon" href="icon.svg">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Receipt Notes">
+<style>
+  /* ---- Tunables (JS keeps these in sync with the controls) ---- */
+  :root {
+    --paper-mm: 80;      /* receipt paper width in mm            */
+    --scale: 1;          /* print-dialog scale (100% = no comp.) */
+    --fs: 20px;          /* base font size                       */
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    background: #40454d;
+    font-family: -apple-system, Segoe UI, Roboto, sans-serif;
+    color: #e8e8e8;
+  }
+
+  /* ---------- Toolbars (never printed) ---------- */
+  .toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
+    padding: 9px 16px;
+    background: #2b2f36;
+    border-bottom: 1px solid #1c1f24;
+  }
+  .toolbar.top { position: sticky; top: 0; z-index: 10; box-shadow: 0 2px 8px rgba(0,0,0,.3); }
+  .toolbar .group { display: flex; gap: 4px; align-items: center; padding-right: 10px; border-right: 1px solid #444a54; }
+  .toolbar .group:last-child { border-right: 0; }
+
+  .toolbar label { font-size: 12px; display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+  .toolbar input[type=number] {
+    width: 58px; padding: 4px 6px; border: 1px solid #555; border-radius: 5px;
+    background: #1c1f24; color: #fff; font-size: 13px;
+  }
+  .toolbar input[type=range] { width: 110px; }
+
+  .btn {
+    min-width: 32px; padding: 6px 9px; border: 1px solid #4a505b; border-radius: 6px;
+    background: #363b43; color: #fff; font-size: 13px; cursor: pointer; line-height: 1;
+  }
+  .btn:hover { background: #434954; }
+  .btn:active { background: #3d7bff; }
+  .btn.primary { background: #3d7bff; border-color: #3d7bff; font-weight: 600; }
+  .btn.primary:hover { filter: brightness(1.1); }
+  .btn b, .btn i, .btn u, .btn s { pointer-events: none; }
+
+  .toolbar select {
+    padding: 5px 6px; border: 1px solid #555; border-radius: 5px;
+    background: #1c1f24; color: #fff; font-size: 13px;
+  }
+  .hint { font-size: 11px; color: #9aa0aa; max-width: 320px; }
+  #imgTools[hidden] { display: none; }
+  .brand { font-size: 14px; font-weight: 700; letter-spacing: .3px; color: #fff; }
+  .btn.primary svg { display: block; width: 18px; height: 18px; }
+
+  /* ---------- Insert-image modal ---------- */
+  .modal-backdrop {
+    position: fixed; inset: 0; z-index: 100;
+    background: rgba(0,0,0,.55);
+    display: none; align-items: center; justify-content: center;
+  }
+  .modal-backdrop.open { display: flex; }
+  .modal {
+    width: 430px; max-width: 92vw;
+    background: #2b2f36; border: 1px solid #1c1f24; border-radius: 10px;
+    padding: 20px; box-shadow: 0 12px 44px rgba(0,0,0,.55);
+  }
+  .modal h3 { margin: 0 0 16px; font-size: 16px; }
+  .modal .row { display: flex; gap: 8px; }
+  .modal input[type=text] {
+    flex: 1; padding: 8px 10px; border: 1px solid #555; border-radius: 6px;
+    background: #1c1f24; color: #fff; font-size: 13px;
+  }
+  .modal .sep { text-align: center; color: #6b7280; font-size: 11px; margin: 14px 0; }
+  .dropzone {
+    border: 2px dashed #4a505b; border-radius: 8px; padding: 26px 16px;
+    text-align: center; color: #9aa0aa; font-size: 13px; line-height: 1.5;
+    cursor: pointer; transition: .15s;
+  }
+  .dropzone:hover, .dropzone.drag { border-color: #3d7bff; color: #cdd3dd; background: #242830; }
+  .dropzone b { color: #cdd3dd; }
+  .modal .actions { display: flex; justify-content: flex-end; margin-top: 18px; }
+
+  /* ---------- Screen layout ---------- */
+  .stage { display: flex; justify-content: center; padding: 30px 10px 90px; }
+
+  /* ---------- The receipt ---------- */
+  .receipt {
+    width: calc(var(--paper-mm) * 1mm);
+    min-height: calc(var(--paper-mm) * 1mm);   /* 1:1 square minimum */
+    background: #fff;
+    color: #000;
+    font-family: "Courier New", ui-monospace, monospace;
+    font-size: var(--fs);
+    line-height: 1.35;
+    padding: 1.1em 0.9em;
+    word-break: break-word;
+    outline: none;
+    box-shadow: 0 6px 24px rgba(0,0,0,.45);
+  }
+  .receipt:empty::before { content: "Type your note here…"; color: #999; }
+  .receipt img { max-width: 100%; height: auto; display: block; }
+  .receipt img.sel { outline: 2px solid #3d7bff; outline-offset: 2px; }
+  .receipt hr { border: 0; border-top: 1px dashed #000; margin: 0.6em 0; }
+  .receipt ul, .receipt ol { margin: 0.3em 0; padding-left: 1.4em; }
+
+  /* ---------- Print ---------- *
+     Paper is really 80mm, but the print dialog stays at 140%. We
+     pre-shrink content by /1.4 so the dialog scales it back to a true
+     80mm. Width AND font shrink by the same factor → stays 1:1.
+     Set "Print scale %" to 100 if a dialog is at its default. */
+  @media print {
+    html, body { background: #fff; margin: 0; }
+    .toolbar, .stage { all: unset; }
+    .no-print { display: none !important; }
+
+    @page { size: calc(var(--paper-mm) * 1mm) auto; margin: 0; }
+
+    .receipt {
+      width: calc(var(--paper-mm) * 1mm / var(--scale));
+      min-height: calc(var(--paper-mm) * 1mm / var(--scale));
+      font-size: calc(var(--fs) / var(--scale));
+      box-shadow: none;
+      padding: 1.1em 0.9em;
+    }
+    .receipt:empty::before { content: ""; }
+    .receipt img.sel { outline: none; }
+  }
+</style>
+</head>
+<body>
+
+  <!-- Row 1: page + print settings -->
+  <div class="toolbar top no-print">
+    <div class="group">
+      <span class="brand">Receipt Note Printer</span>
+    </div>
+    <div class="group">
+      <label>Paper mm <input id="paper" type="number" min="20" max="120" step="1" value="80"></label>
+      <label>Print scale % <input id="scale" type="number" min="50" max="300" step="5" value="100"></label>
+      <label>Base font <input id="fs" type="number" min="8" max="48" step="1" value="20"></label>
+    </div>
+    <span class="hint">Set Paper mm and Print scale % to match your printer's print settings.
+      Base font sets default font size.</span>
+    <div class="group" style="margin-left:auto; border:0; padding:0; gap:8px;">
+      <button class="btn" onclick="clearNote()">Clear note</button>
+      <button class="btn primary" title="Print" onclick="window.print()" aria-label="Print">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round">
+          <path d="M6 9V3h12v6"></path>
+          <path d="M6 18H4a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-2"></path>
+          <rect x="6" y="14" width="12" height="7" rx="1"></rect>
+        </svg>
+      </button>
+    </div>
+  </div>
+
+  <!-- Row 2: rich-text formatting -->
+  <div class="toolbar no-print">
+    <div class="group">
+      <button class="btn" title="Bold"      onmousedown="cmd(event,'bold')"><b>B</b></button>
+      <button class="btn" title="Italic"    onmousedown="cmd(event,'italic')"><i>I</i></button>
+      <button class="btn" title="Underline" onmousedown="cmd(event,'underline')"><u>U</u></button>
+      <button class="btn" title="Strikethrough" onmousedown="cmd(event,'strikeThrough')"><s>S</s></button>
+    </div>
+    <div class="group">
+      <label>Size
+        <input id="sizeSel" type="number" min="6" max="96" step="1"
+               style="width:56px" onchange="setSize(this.value)"> px
+      </label>
+      <button class="btn" title="Bigger"  onmousedown="bump(event,1.15)">A+</button>
+      <button class="btn" title="Smaller" onmousedown="bump(event,0.87)">A−</button>
+    </div>
+    <div class="group">
+      <button class="btn" title="Align left"   onmousedown="cmd(event,'justifyLeft')">⯇</button>
+      <button class="btn" title="Align center" onmousedown="cmd(event,'justifyCenter')">≡</button>
+      <button class="btn" title="Align right"  onmousedown="cmd(event,'justifyRight')">⯈</button>
+    </div>
+    <div class="group">
+      <button class="btn" title="Bullet list"   onmousedown="cmd(event,'insertUnorderedList')">•</button>
+      <button class="btn" title="Numbered list" onmousedown="cmd(event,'insertOrderedList')">1.</button>
+      <button class="btn" title="Divider line"  onmousedown="insertDivider(event)">──</button>
+    </div>
+    <div class="group">
+      <button class="btn" title="Insert image" onmousedown="openImgModal(event)">🖼 Image</button>
+      <input id="imgInput" type="file" accept="image/*" hidden multiple>
+    </div>
+    <div class="group" id="imgTools" hidden>
+      <label>Image width <input id="imgW" type="range" min="15" max="100" step="1" value="100"></label>
+      <button class="btn" title="Left"   onmousedown="alignImg(event,'left')">⯇</button>
+      <button class="btn" title="Center" onmousedown="alignImg(event,'center')">≡</button>
+      <button class="btn" title="Right"  onmousedown="alignImg(event,'right')">⯈</button>
+      <button class="btn" title="Delete image" onmousedown="deleteImg(event)">🗑</button>
+    </div>
+  </div>
+
+  <div class="stage">
+    <div id="receipt" class="receipt" contenteditable="true" spellcheck="true"></div>
+  </div>
+
+  <!-- Insert-image modal -->
+  <div class="modal-backdrop no-print" id="imgModal">
+    <div class="modal">
+      <h3>Insert image</h3>
+      <div class="row">
+        <input id="urlInput" type="text" placeholder="Paste an image URL…" autocomplete="off">
+        <button class="btn primary" onmousedown="insertFromUrl(event)">Add</button>
+      </div>
+      <div class="sep">— or —</div>
+      <div class="dropzone" id="dropzone" tabindex="0">
+        Click to choose a file · drag one here · or paste
+      </div>
+      <div class="actions">
+        <button class="btn" onmousedown="closeImgModal(event)">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+  const root    = document.documentElement;
+  const receipt = document.getElementById('receipt');
+  const paperEl = document.getElementById('paper');
+  const scaleEl = document.getElementById('scale');
+  const fsEl    = document.getElementById('fs');
+  const imgInput= document.getElementById('imgInput');
+  const imgTools= document.getElementById('imgTools');
+  const imgW    = document.getElementById('imgW');
+  let selectedImg = null;
+
+  // ---- Restore saved state ----
+  const saved = JSON.parse(localStorage.getItem('receiptNotes') || '{}');
+  if (saved.html  !== undefined) receipt.innerHTML = saved.html;
+  if (saved.paper) paperEl.value = saved.paper;
+  if (saved.scale) scaleEl.value = saved.scale;
+  if (saved.fs)    fsEl.value    = saved.fs;
+
+  function apply() {
+    root.style.setProperty('--paper-mm', paperEl.value);
+    root.style.setProperty('--scale', (scaleEl.value / 100));
+    root.style.setProperty('--fs', fsEl.value + 'px');
+    save();
+  }
+
+  function save() {
+    try {
+      localStorage.setItem('receiptNotes', JSON.stringify({
+        html: receipt.innerHTML, paper: paperEl.value, scale: scaleEl.value, fs: fsEl.value
+      }));
+    } catch (e) {
+      console.warn('Autosave skipped (storage full — usually large images):', e);
+    }
+  }
+
+  function clearNote() {
+    if (confirm('Clear the note?')) { receipt.innerHTML = ''; selectImg(null); save(); }
+  }
+
+  // ---- Rich-text commands ----
+  // onmousedown + preventDefault keeps the receipt's selection while clicking a button
+  function cmd(e, command, value=null) {
+    e.preventDefault();
+    receipt.focus();
+    document.execCommand('styleWithCSS', false, true);
+    document.execCommand(command, false, value);
+    save();
+  }
+
+  // Apply an exact px size — to a selection, or to whatever you type next
+  function setSize(px) {
+    px = parseInt(px, 10);
+    if (!px) return;
+    receipt.focus();
+    const sel = window.getSelection();
+    if (!sel.rangeCount) return;
+
+    if (sel.isCollapsed) {
+      // No selection: drop a sized span at the cursor so typing continues at that size
+      const span = document.createElement('span');
+      span.style.fontSize = px + 'px';
+      span.appendChild(document.createTextNode('​')); // zero-width space to hold the caret
+      sel.getRangeAt(0).insertNode(span);
+      const r = document.createRange();
+      r.setStart(span.firstChild, 1);
+      r.collapse(true);
+      sel.removeAllRanges();
+      sel.addRange(r);
+    } else {
+      // Selection: resize the highlighted text
+      document.execCommand('styleWithCSS', false, false);
+      document.execCommand('fontSize', false, '7');         // temporary marker size
+      receipt.querySelectorAll('font[size="7"]').forEach(f => {
+        f.removeAttribute('size');
+        f.style.fontSize = px + 'px';
+      });
+    }
+    sizeSel.value = px;
+    save();
+  }
+
+  // Show the font size at the cursor in the Size box
+  const sizeSel = document.getElementById('sizeSel');
+  function updateSizeUI() {
+    const s = window.getSelection();
+    if (!s.rangeCount) return;
+    let node = s.anchorNode;
+    if (node && node.nodeType === 3) node = node.parentElement;
+    if (!node || !receipt.contains(node)) return;
+    sizeSel.value = Math.round(parseFloat(getComputedStyle(node).fontSize));
+  }
+  document.addEventListener('selectionchange', () => {
+    if (document.activeElement === receipt) updateSizeUI();
+  });
+
+  // Scale the selected text relative to its current size
+  function bump(e, factor) {
+    e.preventDefault();
+    const sel = window.getSelection();
+    if (!sel.rangeCount || sel.isCollapsed) return;
+    const base = parseFloat(getComputedStyle(sel.anchorNode.parentElement).fontSize) || 13;
+    setSize(Math.max(6, Math.round(base * factor)));
+  }
+
+  function insertDivider(e) {
+    e.preventDefault();
+    receipt.focus();
+    document.execCommand('insertHTML', false, '<hr>');
+    save();
+  }
+
+  // ---- Images ----
+  const imgModal = document.getElementById('imgModal');
+  const urlInput = document.getElementById('urlInput');
+  const dropzone = document.getElementById('dropzone');
+  let savedRange = null;
+
+  // Remember where the cursor was, so images land there after the modal steals focus
+  function saveSelection() {
+    const s = window.getSelection();
+    if (s.rangeCount && receipt.contains(s.anchorNode)) savedRange = s.getRangeAt(0).cloneRange();
+  }
+  function restoreSelection() {
+    receipt.focus();
+    if (savedRange) {
+      const s = window.getSelection();
+      s.removeAllRanges();
+      s.addRange(savedRange);
+    }
+  }
+
+  function openImgModal(e) {
+    if (e) e.preventDefault();
+    saveSelection();
+    urlInput.value = '';
+    imgModal.classList.add('open');
+    setTimeout(() => urlInput.focus(), 0);
+  }
+  function closeImgModal(e) {
+    if (e) e.preventDefault();
+    imgModal.classList.remove('open');
+  }
+
+  function insertImageSrc(src) {
+    restoreSelection();
+    document.execCommand('insertHTML', false, `<img src="${src}"><br>`);
+    // keep inserting after the image we just placed
+    saveSelection();
+    save();
+  }
+  function insertFromUrl(e) {
+    if (e) e.preventDefault();
+    const url = urlInput.value.trim();
+    if (!url) return;
+    insertImageSrc(url);
+    closeImgModal();
+  }
+  function readFileToImg(file) {
+    const r = new FileReader();
+    r.onload = ev => insertImageSrc(ev.target.result);
+    r.readAsDataURL(file);
+  }
+
+  // File chooser (opened from the dropzone)
+  imgInput.addEventListener('change', () => {
+    [...imgInput.files].forEach(readFileToImg);
+    imgInput.value = '';
+    closeImgModal();
+  });
+
+  // Dropzone: click to browse, or drag-and-drop
+  dropzone.addEventListener('click', () => imgInput.click());
+  dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.classList.add('drag'); });
+  dropzone.addEventListener('dragleave', () => dropzone.classList.remove('drag'));
+  dropzone.addEventListener('drop', e => {
+    e.preventDefault();
+    dropzone.classList.remove('drag');
+    const files = [...e.dataTransfer.files].filter(f => f.type.startsWith('image/'));
+    if (files.length) { files.forEach(readFileToImg); closeImgModal(); }
+  });
+
+  // Ctrl+V paste while the modal is open → grab a screenshot from the clipboard
+  document.addEventListener('paste', e => {
+    if (!imgModal.classList.contains('open')) return;
+    const item = [...(e.clipboardData?.items || [])].find(i => i.type.startsWith('image/'));
+    if (item) {
+      e.preventDefault();
+      readFileToImg(item.getAsFile());
+      closeImgModal();
+    }
+    // a plain-text URL just lands in the input as normal
+  });
+
+  urlInput.addEventListener('keydown', e => { if (e.key === 'Enter') insertFromUrl(e); });
+  imgModal.addEventListener('mousedown', e => { if (e.target === imgModal) closeImgModal(e); });
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && imgModal.classList.contains('open')) closeImgModal(e);
+  });
+
+  function selectImg(img) {
+    if (selectedImg) selectedImg.classList.remove('sel');
+    selectedImg = img;
+    if (img) {
+      img.classList.add('sel');
+      imgW.value = Math.round((img.style.width ? parseFloat(img.style.width) : 100));
+      imgTools.hidden = false;
+    } else {
+      imgTools.hidden = true;
+    }
+  }
+
+  receipt.addEventListener('click', e => {
+    selectImg(e.target.tagName === 'IMG' ? e.target : null);
+  });
+
+  imgW.addEventListener('input', () => {
+    if (selectedImg) { selectedImg.style.width = imgW.value + '%'; save(); }
+  });
+
+  function alignImg(e, where) {
+    e.preventDefault();
+    if (!selectedImg) return;
+    selectedImg.style.display = 'block';
+    selectedImg.style.marginLeft  = (where === 'right'  || where === 'center') ? 'auto' : '0';
+    selectedImg.style.marginRight = (where === 'left'   || where === 'center') ? 'auto' : '0';
+    save();
+  }
+
+  function deleteImg(e) {
+    e.preventDefault();
+    if (selectedImg) { selectedImg.remove(); selectImg(null); save(); }
+  }
+
+  // Paste text as plain text; let pasted images through (handled by browser)
+  receipt.addEventListener('paste', e => {
+    const items = e.clipboardData && e.clipboardData.items;
+    const hasImage = items && [...items].some(i => i.type.startsWith('image/'));
+    if (hasImage) return;                          // allow native image paste
+    e.preventDefault();
+    const text = (e.clipboardData || window.clipboardData).getData('text/plain');
+    document.execCommand('insertText', false, text);
+  });
+
+  receipt.addEventListener('input', save);
+  [paperEl, scaleEl, fsEl].forEach(el => el.addEventListener('input', apply));
+
+  apply();
+  receipt.focus();
+
+  // Register the service worker so the app can be installed and run offline
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('sw.js').catch(err =>
+        console.warn('Service worker registration failed:', err));
+    });
+  }
+</script>
+</body>
+</html>
