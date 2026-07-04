@@ -17,6 +17,7 @@
     --paper-mm: 80;      /* receipt paper width in mm            */
     --scale: 1;          /* print-dialog scale (100% = no comp.) */
     --fs: 20px;          /* base font size                       */
+    --img-nudge: 0;      /* print-only horizontal image shift mm */
   }
 
   * { box-sizing: border-box; }
@@ -119,6 +120,9 @@
   .receipt hr { border: 0; border-top: 1px dashed #000; margin: 0.6em 0; }
   .receipt ul, .receipt ol { margin: 0.3em 0; padding-left: 1.4em; }
 
+  /* End-of-note divider + feed space — only appears when printing */
+  .print-footer { display: none; }
+
   /* ---------- Print ---------- *
      Paper is really 80mm, but the print dialog stays at 140%. We
      pre-shrink content by /1.4 so the dialog scales it back to a true
@@ -140,6 +144,18 @@
     }
     .receipt:empty::before { content: ""; }
     .receipt img.sel { outline: none; }
+    /* Compensate for the Epson driver shifting raster images sideways */
+    .receipt img { transform: translateX(calc(var(--img-nudge) * 1mm / var(--scale))); }
+
+    /* Trailing divider + blank feed so the auto-cutter clears the last line */
+    .print-footer {
+      display: block;
+      width: calc(var(--paper-mm) * 1mm / var(--scale));
+      font-size: calc(var(--fs) / var(--scale));
+      padding: 0 0.9em;
+    }
+    .print-footer hr { border: 0; border-top: 1px dashed #000; margin: 0.6em 0 0; }
+    .print-footer .feed { height: calc(14mm / var(--scale)); }
   }
 </style>
 </head>
@@ -154,6 +170,8 @@
       <label>Paper mm <input id="paper" type="number" min="20" max="120" step="1" value="80"></label>
       <label>Print scale % <input id="scale" type="number" min="50" max="300" step="5" value="100"></label>
       <label>Base font <input id="fs" type="number" min="8" max="48" step="1" value="20"></label>
+      <label title="Shifts images left/right on the printout only — to line images up with text on Epson TM printers">Image shift mm
+        <input id="inudge" type="number" min="-20" max="20" step="0.5" value="0"></label>
     </div>
     <span class="hint">Set Paper mm and Print scale % to match your printer's print settings.
       Base font sets default font size.</span>
@@ -211,6 +229,10 @@
 
   <div class="stage">
     <div id="receipt" class="receipt" contenteditable="true" spellcheck="true"></div>
+    <div class="print-footer" aria-hidden="true">
+      <hr>
+      <div class="feed"></div>
+    </div>
   </div>
 
   <!-- Insert-image modal -->
@@ -237,6 +259,7 @@
   const paperEl = document.getElementById('paper');
   const scaleEl = document.getElementById('scale');
   const fsEl    = document.getElementById('fs');
+  const inudgeEl= document.getElementById('inudge');
   const imgInput= document.getElementById('imgInput');
   const imgTools= document.getElementById('imgTools');
   const imgW    = document.getElementById('imgW');
@@ -248,18 +271,21 @@
   if (saved.paper) paperEl.value = saved.paper;
   if (saved.scale) scaleEl.value = saved.scale;
   if (saved.fs)    fsEl.value    = saved.fs;
+  if (saved.inudge !== undefined) inudgeEl.value = saved.inudge;
 
   function apply() {
     root.style.setProperty('--paper-mm', paperEl.value);
     root.style.setProperty('--scale', (scaleEl.value / 100));
     root.style.setProperty('--fs', fsEl.value + 'px');
+    root.style.setProperty('--img-nudge', (inudgeEl.value || 0));
     save();
   }
 
   function save() {
     try {
       localStorage.setItem('receiptNotes', JSON.stringify({
-        html: receipt.innerHTML, paper: paperEl.value, scale: scaleEl.value, fs: fsEl.value
+        html: receipt.innerHTML, paper: paperEl.value, scale: scaleEl.value,
+        fs: fsEl.value, inudge: inudgeEl.value
       }));
     } catch (e) {
       console.warn('Autosave skipped (storage full — usually large images):', e);
@@ -475,7 +501,7 @@
   });
 
   receipt.addEventListener('input', save);
-  [paperEl, scaleEl, fsEl].forEach(el => el.addEventListener('input', apply));
+  [paperEl, scaleEl, fsEl, inudgeEl].forEach(el => el.addEventListener('input', apply));
 
   apply();
   receipt.focus();

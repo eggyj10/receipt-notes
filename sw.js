@@ -1,6 +1,6 @@
 // Service worker for Receipt Note Printer — makes it installable and offline-capable.
 // Bump CACHE when you change any cached file so clients pick up the new version.
-const CACHE = 'receipt-notes-v1';
+const CACHE = 'receipt-notes-v2';
 const ASSETS = [
   './',
   './index.html',
